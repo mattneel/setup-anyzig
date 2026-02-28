@@ -1,0 +1,207 @@
+name: Setup Anyzig
+description: Install anyzig as a universal Zig compiler that automatically resolves versions from build.zig.zon
+branding:
+  icon: download-cloud
+  color: orange
+
+inputs:
+  version:
+    description: Anyzig release tag to install (e.g. v2025_10_15). `latest` fetches the latest release.
+    required: false
+    default: latest
+  use-cache:
+    description: Cache the anyzig binary and its compiler cache between runs using actions/cache
+    required: false
+    default: "true"
+  cache-key:
+    description: Extra cache key suffix for matrix disambiguation
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Determine platform and download URL (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        asset=""
+        case "${{ runner.os }}-${{ runner.arch }}" in
+          "Linux-X64")
+            asset="anyzig-x86_64-linux.tar.gz"
+            ;;
+          "Linux-ARM64")
+            asset="anyzig-aarch64-linux.tar.gz"
+            ;;
+          "macOS-ARM64")
+            asset="anyzig-aarch64-macos.tar.gz"
+            ;;
+          *)
+            echo "Unsupported platform: runner.os=${{ runner.os }}, runner.arch=${{ runner.arch }}" >&2
+            echo "Supported platforms: Linux/X64, Linux/ARM64, macOS/ARM64, Windows/X64, Windows/ARM64" >&2
+            exit 1
+            ;;
+        esac
+
+        if [[ "${{ inputs.version }}" == "latest" ]]; then
+          download_url="https://github.com/marler8997/anyzig/releases/latest/download/${asset}"
+        else
+          download_url="https://github.com/marler8997/anyzig/releases/download/${{ inputs.version }}/${asset}"
+        fi
+
+        {
+          echo "ANYZIG_ASSET=${asset}"
+          echo "ANYZIG_DOWNLOAD_URL=${download_url}"
+          echo "ANYZIG_EXTRACT_DIR=${RUNNER_TEMP}/anyzig-download"
+          echo "ANYZIG_BIN_DIR=${RUNNER_TEMP}/anyzig-bin"
+        } >> "$GITHUB_ENV"
+
+    - name: Determine platform and download URL (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        $asset = switch ("${{ runner.os }}-${{ runner.arch }}") {
+          "Windows-X64" { "anyzig-x86_64-windows.zip" }
+          "Windows-ARM64" { "anyzig-aarch64-windows.zip" }
+          default {
+            throw "Unsupported platform: runner.os=${{ runner.os }}, runner.arch=${{ runner.arch }}. Supported platforms: Linux/X64, Linux/ARM64, macOS/ARM64, Windows/X64, Windows/ARM64"
+          }
+        }
+
+        if ("${{ inputs.version }}" -eq "latest") {
+          $downloadUrl = "https://github.com/marler8997/anyzig/releases/latest/download/$asset"
+        }
+        else {
+          $downloadUrl = "https://github.com/marler8997/anyzig/releases/download/${{ inputs.version }}/$asset"
+        }
+
+        $extractDir = Join-Path $env:RUNNER_TEMP 'anyzig-download'
+        $binDir = Join-Path $env:RUNNER_TEMP 'anyzig-bin'
+
+        "ANYZIG_ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "ANYZIG_DOWNLOAD_URL=$downloadUrl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "ANYZIG_EXTRACT_DIR=$extractDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "ANYZIG_BIN_DIR=$binDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+    - name: Download and extract anyzig (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        rm -rf "$ANYZIG_EXTRACT_DIR"
+        mkdir -p "$ANYZIG_EXTRACT_DIR"
+        curl -fsSL "$ANYZIG_DOWNLOAD_URL" | tar -xz -C "$ANYZIG_EXTRACT_DIR"
+
+    - name: Download and extract anyzig (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        if (Test-Path $env:ANYZIG_EXTRACT_DIR) {
+          Remove-Item -Path $env:ANYZIG_EXTRACT_DIR -Recurse -Force
+        }
+        New-Item -ItemType Directory -Path $env:ANYZIG_EXTRACT_DIR -Force | Out-Null
+
+        $archivePath = Join-Path $env:ANYZIG_EXTRACT_DIR 'anyzig.zip'
+        Invoke-WebRequest -Uri $env:ANYZIG_DOWNLOAD_URL -OutFile $archivePath
+        Expand-Archive -Path $archivePath -DestinationPath $env:ANYZIG_EXTRACT_DIR -Force
+
+    - name: Install anyzig on PATH (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        mkdir -p "$ANYZIG_BIN_DIR"
+
+        zig_path="$(find "$ANYZIG_EXTRACT_DIR" -type f -name "zig" -print -quit)"
+        if [[ -z "$zig_path" ]]; then
+          echo "Unable to find zig binary in extracted archive ($ANYZIG_ASSET)." >&2
+          exit 1
+        fi
+
+        install -m 0755 "$zig_path" "$ANYZIG_BIN_DIR/zig"
+        echo "$ANYZIG_BIN_DIR" >> "$GITHUB_PATH"
+
+    - name: Install anyzig on PATH (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        New-Item -ItemType Directory -Path $env:ANYZIG_BIN_DIR -Force | Out-Null
+
+        $zigExe = Get-ChildItem -Path $env:ANYZIG_EXTRACT_DIR -Recurse -Filter 'zig.exe' | Select-Object -First 1
+        if (-not $zigExe) {
+          throw "Unable to find zig.exe in extracted archive ($env:ANYZIG_ASSET)."
+        }
+
+        Copy-Item -Path $zigExe.FullName -Destination (Join-Path $env:ANYZIG_BIN_DIR 'zig.exe') -Force
+
+        $zigPdb = Get-ChildItem -Path $env:ANYZIG_EXTRACT_DIR -Recurse -Filter 'zig.pdb' | Select-Object -First 1
+        if ($zigPdb) {
+          Copy-Item -Path $zigPdb.FullName -Destination (Join-Path $env:ANYZIG_BIN_DIR 'zig.pdb') -Force
+        }
+
+        $env:ANYZIG_BIN_DIR | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+    - name: Determine compiler cache path (Unix)
+      if: inputs.use-cache == 'true' && runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        cache_path=""
+        case "${{ runner.os }}" in
+          Linux)
+            cache_path="$HOME/.cache/zig"
+            ;;
+          macOS)
+            cache_path="$HOME/Library/Caches/zig"
+            ;;
+          *)
+            echo "Unsupported OS for cache path: ${{ runner.os }}" >&2
+            exit 1
+            ;;
+        esac
+
+        echo "ANYZIG_CACHE_PATH=${cache_path}" >> "$GITHUB_ENV"
+
+    - name: Determine compiler cache path (Windows)
+      if: inputs.use-cache == 'true' && runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        $cachePath = Join-Path $env:LOCALAPPDATA 'zig'
+        "ANYZIG_CACHE_PATH=$cachePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+    - name: Cache anyzig compiler downloads
+      if: inputs.use-cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.ANYZIG_CACHE_PATH }}
+        key: anyzig-compilers-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key }}
+        restore-keys: |
+          anyzig-compilers-${{ runner.os }}-${{ runner.arch }}-
+          anyzig-compilers-${{ runner.os }}-
+
+    - name: Verify anyzig installation (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+        zig any version
+
+    - name: Verify anyzig installation (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        zig any version

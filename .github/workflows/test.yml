@@ -1,0 +1,39 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+      - run: zig any version
+
+  e2e-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+
+      - name: Create minimal Zig project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p demo
+          cd demo
+          zig 0.14.0 init
+          grep -q '.minimum_zig_version = "0.14.0"' build.zig.zon
+
+      - name: Build with anyzig-resolved compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd demo
+          zig build
